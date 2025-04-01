@@ -7,9 +7,16 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+chunk_time <- tibble(Chunk = NA_character_, Seconds = NA_real_)
+.time <- system.time({
+  # Code to measure
+  x <- rnorm(1e6)  # Generating 1 million random numbers
+  mean_x <- mean(x)  # Calculating the mean
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "Name", Seconds = .time))
 
 # last_week_tonight -- Copilot brute force -----
-{
+.time <- system.time({
   last_week_tonight <- tibble(
     Show = "Last Week Tonight",
     Host = "John Oliver",
@@ -215,11 +222,12 @@ suppressPackageStartupMessages({
     )
   )
   print(last_week_tonight)
-}
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "last_week_tonight", Seconds = .time))
 
 
 # daily_show -- Rvest wikipedia -----
-{
+.time <- system.time({
   ### Step 1: Scrape Links to Each Season -----
   # Define the URL of the main episode list page
   main_url <- "https://en.wikipedia.org/wiki/List_of_The_Daily_Show_episodes"
@@ -304,11 +312,12 @@ suppressPackageStartupMessages({
     daily_show <- dplyr::bind_rows(daily_show, season_table)
   }
   print(daily_show)
-}
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "daily_show", Seconds = .time))
 
 
 # late_night -- Rvest wikipedia -----
-{
+.time <- system.time({
   ### Step 1: Scrape Links to Each Season -----
   # Define the URL of the main episode list page
   main_url <- "https://en.wikipedia.org/wiki/List_of_Late_Night_with_Seth_Meyers_episodes"
@@ -376,11 +385,12 @@ suppressPackageStartupMessages({
     late_night <- dplyr::bind_rows(late_night, season_table3)
   }
   print(late_night)
-}
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "late_night", Seconds = .time))
 
 
 # late_show -- Rvest wikipedia -----
-{
+.time <- system.time({
   ### Step 1: Scrape Links to Each Season -----
   # Define the URL of the main episode list page
   main_url <- "https://en.wikipedia.org/wiki/List_of_The_Late_Show_with_Stephen_Colbert_episodes"
@@ -454,11 +464,12 @@ suppressPackageStartupMessages({
     late_show <- dplyr::bind_rows(late_show, season_table3)
   }
   print(late_show)
-}
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "late_show", Seconds = .time))
 
 
 # Combine shows -----
-{
+.time <- system.time({
   shows <- dplyr::bind_rows(last_week_tonight, daily_show, late_night, late_show)
   shows %>% dim()
   shows %>% summary()
@@ -467,10 +478,11 @@ suppressPackageStartupMessages({
   shows %>% filter(Show == "Late Night") %>% tail()
   shows %>% filter(Show == "The Late Show") %>% tail()
   
-  ## Google trends starts 2004/1/1
+  ## Google trends starts 2004/1/1, and we go 14 days back
   shows2 <- shows %>%
-    dplyr::filter(Air_Date > as.Date("2004-01-01")) %>%
-    mutate(Air_Date = as.POSIXct(Air_Date))
+    rename(Guests = `Guest(s)`, Music_guests = `Musical/entertainment guest(s)`) %>%
+    dplyr::filter(Air_Date > as.Date("2004-01-15"))# %>%
+    #mutate(Air_Date = as.POSIXct(Air_Date))
   shows2 %>% dim()
   shows2 %>% summary()
   shows2
@@ -480,84 +492,166 @@ suppressPackageStartupMessages({
       count(Show, topic = !is.na(Topic)) %>%
       filter(topic == TRUE))
   (cnt_guest <- shows2 %>%
-      count(Show, guests = !is.na(`Guest(s)`)) %>%
+      count(Show, guests = !is.na(Guests)) %>%
       filter(guests == TRUE))
   (cnt_music <- shows2 %>%
-      count(Show, music = !is.na(`Musical/entertainment guest(s)`)) %>%
+      count(Show, music = !is.na(Music_guests)) %>%
       filter(music == TRUE))
   (cnt_description <- shows2 %>%
       count(Show, description = !is.na(Description)) %>%
       filter(description == TRUE))
-}
+})["elapsed"]
+chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
 
 
 # Search Gtrends on variable ----
+## About 12.62 hours... with waiting
 {
   library(gtrendsR)
   library(ggplot2)
   
-  ### Search Topic -- Late Week Tonight vs The Daily Show ----
-  shows_topic <- shows2 %>%
-    inner_join(cnt_topic %>% select(Show), by = join_by(Show))
-  gtrend_topic <- tibble()
-  for(i in 1:nrow(shows_topic)){
-    row <- shows_topic[i, ]
-    .trend <- try({
-      gtrends(keyword = pull(row, Topic),
-              time = paste(
-                pull(row, Air_Date) - as.difftime(14, units = "days"),
-                pull(row, Air_Date) + as.difftime(14, units = "days")))$interest_over_time
-    })
-    if(all(class(.trend) == c("gtrends", "list"))){
-      .trend <- dplyr::bind_cols(row, .trend)
-    } else {
-      ## try-error
-      .trend <- bind_cols(row, tibble(error = .trend %>% as.character))
+  .time <- system.time({
+    ### Search Topic -- Late Week Tonight vs The Daily Show ----
+    shows_topic <- shows2 %>%
+      select(-c(Guests, Music_guests, Description)) %>%
+      inner_join(cnt_topic %>% select(Show), by = join_by(Show)) %>%
+      mutate(
+        ## simplify topic (text before ":", ";", or " (ISBIN")
+        Topic_simplified = stringr::str_extract(Topic, "^[^:;]+(?=:|;| \\(ISBIN )"),
+        Topic_simplified = ifelse(is.na(Topic_simplified),
+                                  Topic, Topic_simplified),
+        ## Pivot longer lists, "and", "&", or ","
+        Topic_simplified_split = 
+          str_split(Topic_simplified, "\\s*( and |&|,)\\s*")
+      ) %>%
+      unnest(Topic_simplified_split) %>% # Expand list columns into rows
+      filter(!is.na(Topic_simplified_split)) %>%
+      head(6)
+    
+    ## Apply the gtrends()
+    gtrend_topic <- tibble()
+    for(i in 1:nrow(shows_topic)){
+      row <- shows_topic[i, ]
+      .trend <- try({
+        .t <- gtrends(keyword = pull(row, Topic_simplified_split),
+                      time = paste(
+                        format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
+                        format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
+        .t$interest_over_time
+      })
+      
+      if(class(.trend) == "data.frame"){
+        ## If gtrend returns
+        .trend <- bind_cols(row, .trend)
+      } else {
+        ## If try-error returns
+        .trend <- bind_cols(row, tibble(
+          keyword = pull(row, Topic_simplified_split),
+          time = paste(
+            format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
+            format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")),
+          error = .trend %>% as.character))
+      }
+      
+      Sys.sleep(10.01) ## ensure we are under 10 requests per 100 seconds
+      gtrend_topic <- bind_rows(.trend, gtrend_topic)
     }
     
-    gtrend_topic <- bind_rows(.trend, gtrend_topic)
-  }
-  gtrend_topic
+    ## Review
+    gtrend_topic
+    gtrend_topic %>%
+      count(Show, Season, Episode, Topic) %>%
+      arrange(-n) %>%
+      count(Show, worked = n == 29)
+    ## Worked
+    gtrend_topic %>%
+      count(Show, Season, Episode, Topic) %>%
+      filter(n == 29)
+    ## Errors
+    gtrend_topic %>%
+      count(error)
+    
+    beepr::beep()
+  })["elapsed"]
+  chunk_time <- bind_rows(chunk_time, c(Chunk = "gtrend_topic", Seconds = .time))
   
   
   ### Search Guest(s) -- Later Night, The Daily Show, The Late Show ----
-  shows_guest <- shows2 %>%
-    inner_join(cnt_guest %>% select(Show), by = join_by(Show))
-  gtrend_topic <- tibble()
-  for(i in 1:nrow(shows_topic)){
-    cat(i, " of ", nrow(shows_topic), "\n")
-    row <- shows_topic[i, ]
-    .trend <- try({
-      gtrends(keyword = pull(row, Topic),
-              time = paste(
-                pull(row, Air_Date) - as.difftime(14, units = "days"),
-                pull(row, Air_Date) + as.difftime(14, units = "days")))$interest_over_time
-    })
-    if(all(class(.trend) == c("gtrends", "list"))){
-      .trend <- dplyr::bind_cols(row, .trend)
-    } else {
-      ## try-error
-      .trend <- bind_cols(row, tibble(error = .trend %>% as.character))
+  .time <- system.time({
+    ### Search Topic -- Late Week Tonight vs The Daily Show ----
+    shows_guest <- shows2 %>%
+      select(-c(Topic, Music_guests, Description)) %>%
+      inner_join(cnt_guest %>% select(Show), by = join_by(Show)) %>%
+      mutate(
+        ## simplify topic (text before ":", ";", or " (")
+        Guest_simplified = stringr::str_extract(Guests, "^[^:;]+(?=:|;| \\()"),
+        Guest_simplified = ifelse(is.na(Guest_simplified),
+                                  Guests, Guest_simplified),
+        ## Pivot longer lists, "and", "&", or ","
+        Guest_simplified_split =
+          str_split(Guest_simplified, "\\s*( and |&|,)\\s*")
+      ) %>%
+      unnest(Guest_simplified_split) %>% # Expand list columns into rows
+      head(6)
+    
+    ## Apply the gtrends()
+    gtrend_guest <- tibble()
+    for(i in 1:nrow(shows_guest)){
+      row <- shows_guest[i, ]
+      .trend <- try({
+        .t <- gtrends(keyword = pull(row, Guest_simplified_split),
+                      time = paste(
+                        format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
+                        format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
+        .t$interest_over_time
+      })
+      
+      if(class(.trend) == "data.frame"){
+        .trend <- bind_cols(row, .trend)
+      } else {
+        ## try-error
+        .trend <- bind_cols(row, tibble(
+          keyword = pull(row, Guest_simplified_split),
+          time = paste(
+            format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
+            format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")) %>% as.character(),
+          error = .trend %>% as.character))
+      }
+      
+      Sys.sleep(10.01) ## ensure we are under 10 requests per 100 seconds
+      gtrend_guest <- bind_rows(.trend, gtrend_guest)
     }
     
-    gtrend_topic <- bind_rows(.trend, gtrend_topic)
-  }
-  gtrend_topic
-  gtrend_topic %>%
-    count(Show, Season, Episode, Topic) %>%
-    arrange(-n) %>%
-    count(Show, worked = n == 7)
+    ## Review
+    gtrend_guest
+    gtrend_guest %>%
+      count(Show, Season, Episode, Guests) %>%
+      arrange(-n) %>%
+      count(Show, worked = n == 29)
+    ## Worked
+    gtrend_guest %>%
+      count(Show, Season, Episode, Guests) %>%
+      filter(n == 29)
+    ## Errors
+    gtrend_guest %>%
+      count(error)
+    beepr::beep()
+  })["elapsed"]
+  chunk_time <- bind_rows(chunk_time, c(Chunk = "gtrend_guest", Seconds = .time))
   
-  gtrend_working <- gtrend_topic %>%
-    count(Show, Season, Episode, Topic) %>%
-    arrange(-n) %>%
-    filter(n == 7)
   
-  gtrend_topic %>%
-    inner_join(gtrend_working) %>%
-    View()
-    
-  ### Search Musical/Entertainment Guest(s) -- Late Night vs The Late Show ----
+  ## Search Musical/Entertainment Guest(s) -- Late Night vs The Late Show ----
   
-  ### Search description -- Late Night vs The Late Show ----
+  ## Search description -- Late Night vs The Late Show ----
+  
+  
+  # Session info ------
+  
+  chunk_time
+  beepr::beep(4)
+  sessionInfo()
 }
+
+
+
+
