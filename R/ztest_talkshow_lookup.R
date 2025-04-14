@@ -5,6 +5,9 @@ suppressPackageStartupMessages({
   library(rvest) # For web scraping
   library(dplyr)
   library(tidyr)
+  library(ggplot2)
+  library(gtrendsR)
+  library(ggridges)
 })
 
 chunk_time <- tibble(Chunk = NA_character_, Seconds = NA_real_)
@@ -505,31 +508,43 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
 
 
 # Search Gtrends on variable ----
-## About 12.62 hours... with waiting
+### Search Topic -- Late Week Tonight vs The Daily Show -----
+## About 12.62 hours... (w/ 10.01s wait)
 {
-  library(gtrendsR)
-  library(ggplot2)
+
+  
   
   .time <- system.time({
-    ### Search Topic -- Late Week Tonight vs The Daily Show ----
+    load("output/gtrend_topic.rda")
+    
+    ## Find already completed searches.
+    already_complete <- gtrend_topic %>%
+      filter(!(error %in% c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
+                            "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
+                            "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n"))
+      ) %>%
+      select(Show, Host, Season, Episode, keyword, error)
+    
+    ## Find topics that need to be run.
     shows_topic <- shows2 %>%
       select(-c(Guests, Music_guests, Description)) %>%
       inner_join(cnt_topic %>% select(Show), by = join_by(Show)) %>%
+      anti_join(already_complete) %>% 
       mutate(
         ## simplify topic (text before ":", ";", or " (ISBIN")
         Topic_simplified = stringr::str_extract(Topic, "^[^:;]+(?=:|;| \\(ISBIN )"),
         Topic_simplified = ifelse(is.na(Topic_simplified),
                                   Topic, Topic_simplified),
         ## Pivot longer lists, "and", "&", or ","
-        Topic_simplified_split = 
-          str_split(Topic_simplified, "\\s*( and |&|,)\\s*")
+        Topic_simplified_split =
+          stringr::str_split(Topic_simplified, "\\s*( and |&|,)\\s*")
       ) %>%
       unnest(Topic_simplified_split) %>% # Expand list columns into rows
       filter(!is.na(Topic_simplified_split)) %>%
-      head(6)
+      head(1e7)
     
     ## Apply the gtrends()
-    gtrend_topic <- tibble()
+    gtrend_topic <- already_complete
     for(i in 1:nrow(shows_topic)){
       row <- shows_topic[i, ]
       .trend <- try({
@@ -538,11 +553,16 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
                         format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
                         format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
         .t$interest_over_time
-      })
+      }, silent = TRUE)
       
+      ## Handle cases
       if(class(.trend) == "data.frame"){
         ## If gtrend returns
         .trend <- bind_cols(row, .trend)
+        if(class(.trend$hits) == "character")
+          .trend$hits <- .trend$hits %>%
+            gsub("<1", "1", .) %>%
+            as.integer()
       } else {
         ## If try-error returns
         .trend <- bind_cols(row, tibble(
@@ -553,32 +573,146 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
           error = .trend %>% as.character))
       }
       
-      Sys.sleep(10.01) ## ensure we are under 10 requests per 100 seconds
+      ## Upkeep
       gtrend_topic <- bind_rows(.trend, gtrend_topic)
+      if(sum(gtrend_topic$error %>% tail(100) %in%
+             c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 90
+      ){
+        cat("i:", i, "Stopping due to last 100 error having 90 of limit reach errors\n")
+        beepr::beep(4)
+        stop()
+      }
+      if(i %% 10 == 0){
+        cat("i:", i, "of", nrow(shows_topic), "\n")
+        beepr::beep()
+      }
+      Sys.sleep(10.01) ## ensure we are under 10 requests per 100 seconds
     }
     
-    ## Review
+    if(F)
+      save(gtrend_topic, file = "output/gtrend_topic.rda")
+    
+    
+    #### Review -----
     gtrend_topic
     gtrend_topic %>%
       count(Show, Season, Episode, Topic) %>%
       arrange(-n) %>%
-      count(Show, worked = n == 29)
+      count(Show, worked = n >= 7)
     ## Worked
-    gtrend_topic %>%
+    (worked_topic <- gtrend_topic %>%
       count(Show, Season, Episode, Topic) %>%
-      filter(n == 29)
+      filter(n >= 7))
+    worked_topic %>% count(Show)
     ## Errors
     gtrend_topic %>%
       count(error)
     
+    ### Create measures for graphic data -----
+    gdat <- worked_topic %>%
+      ## Filter data to those that worked
+      inner_join(gtrend_topic, .) %>%
+      ## Create measures
+      mutate(days_relative_to_Air_Date = (as.Date(date) - Air_Date) %>% as.numeric()) %>%
+      group_by(Show, Host, Season, Episode, Air_Date, keyword) %>%
+      summarize(
+        sum_hits_before = max(sum(hits[days_relative_to_Air_Date < 0 & days_relative_to_Air_Date >= -7], na.rm = TRUE), 1),
+        sum_hits_after = sum(hits[days_relative_to_Air_Date > 0 & days_relative_to_Air_Date <= 7], na.rm = TRUE),
+        ratio = sum_hits_after / sum_hits_before
+      ) %>%
+      ungroup() %>%
+      ## Join back to data.
+      inner_join(., gtrend_topic %>%
+                   select(-c(Topic, Topic_simplified,
+                             Topic_simplified_split, time, error,
+                             geo, gprop, category))) %>%
+      mutate(keyword2 = paste0(keyword, " (", (ratio %>% round(2)), ")"),
+             start_purple = Air_Date - 7,
+             end_purple = Air_Date,
+             start_red = Air_Date,
+             end_red = Air_Date + 7
+      ) %>%
+      arrange(-ratio)
+    
+    ## Plot
+    gdat %>%
+      head(16 * 29) %>%
+      filter(!is.na(date), !is.na(keyword2)) %>%
+      mutate(date = as.Date(date)) %>%
+      ggplot(aes(date, hits, group = keyword2)) +
+      geom_rect(
+        aes(xmin = start_purple, xmax = end_purple, ymin = -Inf, ymax = Inf),
+        fill = "orchid", color = "grey50", alpha = 0.1, inherit.aes = FALSE) +
+      geom_rect(
+        aes(xmin = start_red, xmax = end_red, ymin = -Inf, ymax = Inf),
+        fill = "salmon", color = "grey50", alpha = 0.1, inherit.aes = FALSE) +
+      geom_line() +
+      facet_wrap(~keyword2, scales = "free_x") +
+      labs(x = "Date", y = "Relative Hits") +
+      theme_bw()
+    
+    ## Summary of show
+    gdat %>%
+      group_by(Show, Host) %>%
+      summarize(mean_ratio = mean(ratio, na.rm = TRUE),
+                median_ratio = median(ratio, na.rm = TRUE),
+                sd_ratio = sd(ratio, na.rm = TRUE),
+                mean_keywords_per_episode = mean((n() / 29) %>% ceiling(), na.rm = TRUE) / n_distinct(Episode)) %>%
+      left_join(., gtrend_topic %>%
+                  group_by(Show, Host) %>%
+                  summarize(pct_error = 100 * sum(substring(error, 1, 5) == "Error", na.rm = TRUE) / n())
+      )
+    
+    gdat %>%
+      count(Show, Host, keyword, ratio) %>% select(-n) %>%
+      inner_join(., gdat %>% count(Show, Host) %>% rename(n_keywords = n)) %>%
+      mutate(Show_Host = paste0(Show, ", ", Host, " (", n_keywords, ")")) %>%
+      ggplot(aes(x = log2(ratio + .1), 
+                 y = reorder(Show_Host, n_keywords), fill = Show_Host)) +
+      geom_density_ridges(scale = .9) + # Adjust the scale to reduce overlap
+      theme_bw() +
+      theme(legend.position = "none") +
+      labs(x = "Ratio [log2]",
+           y = "Show, Host (Count of keywords)")
+    
+    ## Keyword by descending ratio
+    gdat %>%
+      filter(ratio != Inf) %>%
+      count(Show, Host, Season, Episode, keyword, ratio) %>%
+      arrange(-ratio) %>%
+      select(-n)
+    
+    ## Keyword by ascending ratio
+    gdat %>%
+      filter(ratio != Inf) %>%
+      count(Show, Host, Season, Episode, keyword, ratio) %>%
+      arrange(ratio) %>%
+      select(-n)
+    
     beepr::beep()
   })["elapsed"]
   chunk_time <- bind_rows(chunk_time, c(Chunk = "gtrend_topic", Seconds = .time))
+}
+
+
+### Search Guest(s) -- Later Night, The Daily Show, The Late Show ----
+{
+  load("output/gtrend_guest.rda")
   
-  
-  ### Search Guest(s) -- Later Night, The Daily Show, The Late Show ----
+  ## about 29.05 hours at 1 keyword / 10 sec
   .time <- system.time({
-    ### Search Topic -- Late Week Tonight vs The Daily Show ----
+    ## Find already completed searches.
+    already_complete <- gtrend_guest %>%
+      filter(!(error %in%
+                 c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
+                   "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
+                   "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n"))
+      ) %>%
+      select(Show, Host, Season, Episode, keyword, error)
+    
+    ## Find topics that need to be run.
     shows_guest <- shows2 %>%
       select(-c(Topic, Music_guests, Description)) %>%
       inner_join(cnt_guest %>% select(Show), by = join_by(Show)) %>%
@@ -589,10 +723,10 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
                                   Guests, Guest_simplified),
         ## Pivot longer lists, "and", "&", or ","
         Guest_simplified_split =
-          str_split(Guest_simplified, "\\s*( and |&|,)\\s*")
+          stringr::str_split(Guest_simplified, "\\s*( and |&|,)\\s*")
       ) %>%
       unnest(Guest_simplified_split) %>% # Expand list columns into rows
-      head(6)
+      head(1e9)
     
     ## Apply the gtrends()
     gtrend_guest <- tibble()
@@ -604,12 +738,17 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
                         format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
                         format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
         .t$interest_over_time
-      })
+      }, silent = TRUE)
       
       if(class(.trend) == "data.frame"){
+        ## If gtrend returns
         .trend <- bind_cols(row, .trend)
+        if(class(.trend$hits) == "character")
+          .trend$hits <- .trend$hits %>%
+            gsub("<1", "1", .) %>%
+            as.integer()
       } else {
-        ## try-error
+        ## If try-error returns
         .trend <- bind_cols(row, tibble(
           keyword = pull(row, Guest_simplified_split),
           time = paste(
@@ -618,20 +757,38 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
           error = .trend %>% as.character))
       }
       
+      ## Upkeep
+      gtrend_topic <- bind_rows(.trend, gtrend_topic)
+      if(sum(gtrend_topic$error %>% tail(100) %in%
+             c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 90
+      ){
+        cat("i:", i, "Stopping due to last 100 error having 90 of limit reach errors\n")
+        beepr::beep(4)
+        stop()
+      }
+      if(i %% 10 == 0){
+        cat("i:", i, "of", nrow(shows_guest), "\n")
+        beepr::beep()
+      }
       Sys.sleep(10.01) ## ensure we are under 10 requests per 100 seconds
-      gtrend_guest <- bind_rows(.trend, gtrend_guest)
     }
+    
+    if(F)
+      save(gtrend_guest, file = "output/gtrend_guest.rda")
+    
     
     ## Review
     gtrend_guest
-    gtrend_guest %>%
+    worked_guest <- gtrend_guest %>%
       count(Show, Season, Episode, Guests) %>%
       arrange(-n) %>%
       count(Show, worked = n == 29)
     ## Worked
-    gtrend_guest %>%
+    (worked_guest <- gtrend_guest %>%
       count(Show, Season, Episode, Guests) %>%
-      filter(n == 29)
+      filter(n >= 7))
     ## Errors
     gtrend_guest %>%
       count(error)
@@ -643,6 +800,45 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
   ## Search Musical/Entertainment Guest(s) -- Late Night vs The Late Show ----
   
   ## Search description -- Late Night vs The Late Show ----
+  
+  ## Plotting ----
+  library(lubridate)
+  dat <- gtrend_guest %>%
+    inner_join(gtrend_guest %>%
+                 count(Show, Season, Episode, Guests) %>%
+                 filter(n == 29)) %>%
+    mutate(
+      Air_Date = as.POSIXct.Date(Air_Date),
+      start_purple = Air_Date - days(3),
+      end_purple = Air_Date,
+      start_red = Air_Date,
+      end_red = Air_Date + days(3)
+    )
+    
+  dat %>% ggplot(aes(date, hits, group = keyword)) +
+    geom_rect(
+      aes(xmin = start_purple, xmax = end_purple, ymin = -Inf, ymax = Inf),
+      fill = "orchid", color = "grey50", alpha = 0.2, inherit.aes = FALSE) +
+    geom_rect(
+      aes(xmin = start_red, xmax = end_red, ymin = -Inf, ymax = Inf),
+      fill = "salmon", color = "grey50", alpha = 0.2, inherit.aes = FALSE
+    ) +
+    # annotate("rect", color = "grey50",
+    #          xmin = Air_Date - 3,
+    #          xmax = Air_Date,
+    #          ymin = -Inf, ymax = Inf,
+    #          alpha = 0.2, fill = "orchid") +
+    # # Add red rectangles using annotate()
+    # annotate("rect", color = "grey50",
+    #          xmin = Air_Date,
+    #          xmax = Air_Date + 3,
+    #          ymin = -Inf, ymax = Inf,
+    #          alpha = 0.2, fill = "salmon") +
+    geom_line() +
+    labs(title = paste("Google Trends:"),
+         x = "Date", y = "Hits") +
+    facet_wrap(~keyword, scales = "free_x")
+  
   
   
   # Session info ------
