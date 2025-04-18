@@ -1,0 +1,178 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Bump
+
+```{r}
+tictoc::tic("Compile report")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(ggridges)
+})
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+```
+
+
+
+Analysis of late night shows looking at the bump in google trends hits following a show. The Colbert Report discussed the "Colbert-bump", where a guest or topic of the show received a boost in attention following the show. This repository and analysis set out to quantify and summarize the gain in attention across various late night shows.
+
+## Gathering the data
+
+Before we can search the show we need a list of episodes, topics, and guests to work with. To create such a list I had co-pilot aid me in creating an `rvest` script to search Wikipedia articles for 4 different late night shows: The Daily Show (various hosts), Last Week Tonight (John Oliver), Late Night (Seth Meyers), and The Late Show (Stephen Colbert). Program information contained topics, guests, musical/entertainment guests, and occasionally a description.
+
+```{r}
+load("output/shows2.rda")
+shows2 %>% str()
+
+shows2 %>%
+  count(Show, topic = !is.na(Topic)) %>%
+  filter(topic == TRUE)
+```
+
+After a variable to compare is selected, `gtrendsR` is used to look up the relative google hits for each simplified term. A period of 14 days on either side of the episode air date was retrieved from google trends. Google trends was available since Jan 1, 2004. I define the following measure to quantify the gain in search hits around the air date of the episode.
+
+```
+ratio = sum of hits in the previous 7 days before air (minimum of 1) / sum of hits in the proceeding 7 days after air
+```
+
+## Topic
+
+Let's consider Topic data for Last Week Tonight and The Daily show.
+
+```{r}
+load("output/gtrend_topic.rda")
+gtrend_topic <- gtrend_topic %>%
+  select(-c(Topic, Topic_simplified, Topic_simplified_split))
+gtrend_topic %>% str()
+```
+
+Not everything returned the expected google trends data. Let's review how that broke down.
+
+```{r}
+## Count Show-episode-search worked
+gtrend_topic %>%
+  count(Show, Host, Season, Episode, keyword) %>%
+  arrange(-n) %>%
+  count(Show, Host, worked = n >= 7)
+
+## Topics that Worked
+(worked_topic <- gtrend_topic %>%
+    count(Show, Season, Episode, keyword) %>%
+    filter(n >= 7))
+```
+
+Still, of the remaining data we can apply this analysis.
+
+### Example topic visuals
+
+```{r}
+gdat <- worked_topic %>%
+  ## Filter data to those that worked
+  inner_join(gtrend_topic, .) %>%
+  ## Create measures
+  mutate(days_relative_to_Air_Date = (as.Date(date) - Air_Date) %>% as.numeric()) %>%
+  group_by(Show, Host, Season, Episode, Air_Date, keyword) %>%
+  summarize(
+    sum_hits_before = max(sum(hits[days_relative_to_Air_Date < 0 & days_relative_to_Air_Date >= -7], na.rm = TRUE), 1),
+    sum_hits_after = sum(hits[days_relative_to_Air_Date > 0 & days_relative_to_Air_Date <= 7], na.rm = TRUE),
+    ratio = sum_hits_after / sum_hits_before
+  ) %>%
+  ungroup() %>%
+  ## Join back to data.
+  inner_join(., gtrend_topic %>%
+               select(Show, Host, Season, Episode,
+                      Air_Date, keyword, date, hits)) %>%
+  mutate(keyword2 = paste0(keyword, " (", (ratio %>% round(2)), ")"),
+         start_purple = Air_Date - 7,
+         end_purple = Air_Date,
+         start_red = Air_Date,
+         end_red = Air_Date + 7
+  ) %>%
+  arrange(-ratio)
+
+## Plot
+gdat %>%
+  head(16 * 29) %>%
+  filter(!is.na(date), !is.na(keyword2)) %>%
+  mutate(date = as.Date(date)) %>%
+  ggplot(aes(date, hits, group = keyword2)) +
+  geom_rect(
+    aes(xmin = start_purple, xmax = end_purple, ymin = -Inf, ymax = Inf),
+    fill = "orchid", color = "grey50", alpha = 0.1, inherit.aes = FALSE) +
+  geom_rect(
+    aes(xmin = start_red, xmax = end_red, ymin = -Inf, ymax = Inf),
+    fill = "salmon", color = "grey50", alpha = 0.1, inherit.aes = FALSE) +
+  geom_line() +
+  facet_wrap(~keyword2, scales = "free_x") +
+  labs(x = "Date", y = "Relative Hits") +
+  theme_bw()
+```
+
+### Show summaries
+
+Summary of show:
+
+```{r}
+## Summary of show
+gdat %>%
+  group_by(Show, Host) %>%
+  summarize(mean_ratio = mean(ratio, na.rm = TRUE),
+            median_ratio = median(ratio, na.rm = TRUE),
+            sd_ratio = sd(ratio, na.rm = TRUE),
+            mean_keywords_per_episode = mean((n() / 29) %>% ceiling(), na.rm = TRUE) / n_distinct(Episode)) %>%
+  left_join(., gtrend_topic %>%
+              group_by(Show, Host) %>%
+              summarize(pct_error = 100 * sum(substring(error, 1, 5) == "Error", na.rm = TRUE) / n())
+  )
+```
+
+Visual of ratio, log10
+
+```{r}
+gdat %>%
+  count(Show, Host, keyword, ratio) %>% select(-n) %>%
+  inner_join(., gdat %>% count(Show, Host) %>% rename(n_keywords = n)) %>%
+  mutate(Show_Host = paste0(Show, ", ", Host, " (", n_keywords, ")")) %>%
+  ggplot(aes(x = log10(ratio + .1), 
+             y = reorder(Show_Host, n_keywords), fill = Show_Host)) +
+  geom_density_ridges(scale = .9) + # Adjust the scale to reduce overlap
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Ratio [log10]",
+       y = "Show, Host (Count of keywords)")
+```
+
+Highest ratios:
+
+```{r}
+## Keyword by descending ratio
+gdat %>%
+  filter(ratio != Inf) %>%
+  count(Show, Host, Season, Episode, keyword, ratio) %>%
+  arrange(-ratio) %>%
+  select(-n)
+```
+
+Lowest ratios:
+
+```{r}
+## Keyword by ascending ratio
+gdat %>%
+  filter(ratio != Inf) %>%
+  count(Show, Host, Season, Episode, keyword, ratio) %>%
+  arrange(ratio) %>%
+  select(-n)
+```
+
+
+# Session info
+
+```{r}
+tictoc::toc() ## "Compile report"
+sessionInfo()
+```
+

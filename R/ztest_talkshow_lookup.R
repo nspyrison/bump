@@ -474,6 +474,9 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "late_show", Seconds = .time))
 # Combine shows -----
 .time <- system.time({
   shows <- dplyr::bind_rows(last_week_tonight, daily_show, late_night, late_show)
+  save(shows2, file = "output/shows2.rda")
+  if(F)
+    load("output/shows2.rda")
   shows %>% dim()
   shows %>% summary()
   shows %>% filter(Show == "Last Week Tonight") %>% tail()
@@ -489,6 +492,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "late_show", Seconds = .time))
   shows2 %>% dim()
   shows2 %>% summary()
   shows2
+
   
   ## Counts variables for comparison
   (cnt_topic <- shows2 %>%
@@ -511,17 +515,15 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
 ### Search Topic -- Late Week Tonight vs The Daily Show -----
 ## About 12.62 hours... (w/ 10.01s wait)
 {
-
-  
-  
   .time <- system.time({
     load("output/gtrend_topic.rda")
     
     ## Find already completed searches.
-    already_complete <- gtrend_topic %>%
-      filter(!(error %in% c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
-                            "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
-                            "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n"))
+    complete_topic <- gtrend_topic %>%
+      filter(!(error %in%
+                 c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
+                   "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
+                   "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n"))
       ) %>%
       select(Show, Host, Season, Episode, keyword, error)
     
@@ -529,7 +531,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
     shows_topic <- shows2 %>%
       select(-c(Guests, Music_guests, Description)) %>%
       inner_join(cnt_topic %>% select(Show), by = join_by(Show)) %>%
-      anti_join(already_complete) %>% 
+      anti_join(complete_topic) %>% 
       mutate(
         ## simplify topic (text before ":", ";", or " (ISBIN")
         Topic_simplified = stringr::str_extract(Topic, "^[^:;]+(?=:|;| \\(ISBIN )"),
@@ -544,7 +546,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
       head(1e7)
     
     ## Apply the gtrends()
-    gtrend_topic <- already_complete
+    gtrend_topic <- complete_topic
     for(i in 1:nrow(shows_topic)){
       row <- shows_topic[i, ]
       .trend <- try({
@@ -553,7 +555,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
                         format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
                         format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
         .t$interest_over_time
-      }, silent = TRUE)
+      }, silent = FALSE)
       
       ## Handle cases
       if(class(.trend) == "data.frame"){
@@ -575,10 +577,10 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
       
       ## Upkeep
       gtrend_topic <- bind_rows(.trend, gtrend_topic)
-      if(sum(gtrend_topic$error %>% tail(100) %in%
+      if(sum(gtrend_topic$error %>% tail(50) %in%
              c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
                "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
-               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 90
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 40
       ){
         cat("i:", i, "Stopping due to last 100 error having 90 of limit reach errors\n")
         beepr::beep(4)
@@ -598,9 +600,9 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
     #### Review -----
     gtrend_topic
     gtrend_topic %>%
-      count(Show, Season, Episode, Topic) %>%
+      count(Show, Host, Season, Episode, Topic) %>%
       arrange(-n) %>%
-      count(Show, worked = n >= 7)
+      count(Show, Host, worked = n >= 7)
     ## Worked
     (worked_topic <- gtrend_topic %>%
       count(Show, Season, Episode, Topic) %>%
@@ -704,7 +706,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
   ## about 29.05 hours at 1 keyword / 10 sec
   .time <- system.time({
     ## Find already completed searches.
-    already_complete <- gtrend_guest %>%
+    complete_guest <- gtrend_guest %>%
       filter(!(error %in%
                  c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
                    "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
@@ -716,6 +718,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
     shows_guest <- shows2 %>%
       select(-c(Topic, Music_guests, Description)) %>%
       inner_join(cnt_guest %>% select(Show), by = join_by(Show)) %>%
+      anti_join(complete_guest) %>%
       mutate(
         ## simplify topic (text before ":", ";", or " (")
         Guest_simplified = stringr::str_extract(Guests, "^[^:;]+(?=:|;| \\()"),
@@ -729,7 +732,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
       head(1e9)
     
     ## Apply the gtrends()
-    gtrend_guest <- tibble()
+    gtrend_guest <- complete_guest
     for(i in 1:nrow(shows_guest)){
       row <- shows_guest[i, ]
       .trend <- try({
@@ -738,7 +741,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
                         format(as.Date(pull(row, Air_Date) - 14), "%Y-%m-%d"),
                         format(as.Date(pull(row, Air_Date) + 14), "%Y-%m-%d")))
         .t$interest_over_time
-      }, silent = TRUE)
+      }, silent = FALSE)
       
       if(class(.trend) == "data.frame"){
         ## If gtrend returns
@@ -758,13 +761,13 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
       }
       
       ## Upkeep
-      gtrend_topic <- bind_rows(.trend, gtrend_topic)
-      if(sum(gtrend_topic$error %>% tail(100) %in%
+      gtrend_guest <- bind_rows(.trend, gtrend_guest)
+      if(sum((gtrend_guest$error %>% tail(50)) %in%
              c("Error in get_widget(comparison_item, category, gprop, hl, cookie_url,  : \n  widget$status_code == 200 is not TRUE\n",
                "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:400\n",
-               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 90
+               "Error in interest_over_time(widget, comparison_item, tz) : \n  Status code was not 200. Returned status code:429\n")) >= 40
       ){
-        cat("i:", i, "Stopping due to last 100 error having 90 of limit reach errors\n")
+        cat("i:", i, "Stopping due to last 50 error having 40 of limit reach errors\n")
         beepr::beep(4)
         stop()
       }
@@ -784,7 +787,7 @@ chunk_time <- bind_rows(chunk_time, c(Chunk = "Combine shows", Seconds = .time))
     worked_guest <- gtrend_guest %>%
       count(Show, Season, Episode, Guests) %>%
       arrange(-n) %>%
-      count(Show, worked = n == 29)
+      count(Show, worked = n >= 7)
     ## Worked
     (worked_guest <- gtrend_guest %>%
       count(Show, Season, Episode, Guests) %>%
