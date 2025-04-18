@@ -1,5 +1,8 @@
 ---
-output: html_document
+output: 
+  rmarkdown::github_document:
+    toc: true
+    toc_depth: 2
 editor_options: 
   chunk_output_type: console
 ---
@@ -12,8 +15,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(ggridges)
 })
-knitr::opts_chunk$set(warning = FALSE, message = FALSE)
-
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, cache = FALSE)
 ```
 
 
@@ -36,7 +38,7 @@ shows2 %>%
 After a variable to compare is selected, `gtrendsR` is used to look up the relative google hits for each simplified term. A period of 14 days on either side of the episode air date was retrieved from google trends. Google trends was available since Jan 1, 2004. I define the following measure to quantify the gain in search hits around the air date of the episode.
 
 ```
-ratio = sum of hits in the previous 7 days before air (minimum of 1) / sum of hits in the proceeding 7 days after air
+ratio = sum of hits in the previous 7 days (minimum of 1) / sum of hits in the proceeding 7 days
 ```
 
 ## Topic
