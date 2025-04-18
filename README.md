@@ -1,10 +1,22 @@
 
 - [Bump](#bump)
+  - [Abstract](#abstract)
   - [Gathering the data](#gathering-the-data)
   - [Topic](#topic)
+  - [Show-grained visuals](#show-grained-visuals)
+  - [Show summaries](#show-summaries)
+  - [Limitations](#limitations)
 - [Session info](#session-info)
 
 # Bump
+
+## Abstract
+
+Analysis of late night shows looking at the bump in google trends hits
+following a show. The Colbert Report discussed the “Colbert-bump”, where
+a guest or topic of the show received a boost in attention following the
+show. This repository and analysis set out to quantify and summarize the
+gain in attention across various late night shows.
 
 ``` r
 tictoc::tic("Compile report")
@@ -15,12 +27,6 @@ suppressPackageStartupMessages({
 })
 knitr::opts_chunk$set(warning = FALSE, message = FALSE, cache = FALSE)
 ```
-
-Analysis of late night shows looking at the bump in google trends hits
-following a show. The Colbert Report discussed the “Colbert-bump”, where
-a guest or topic of the show received a boost in attention following the
-show. This repository and analysis set out to quantify and summarize the
-gain in attention across various late night shows.
 
 ## Gathering the data
 
@@ -141,7 +147,12 @@ gtrend_topic %>%
 
 Still, of the remaining data we can apply this analysis.
 
-### Example topic visuals
+## Show-grained visuals
+
+This illustrates the ratio timeframe, one week beforehand is shaded in
+orcid purple, while a one week after is shaded in salmon red. The ratio
+is the after over before (with a minimum of 1). The ratio of the
+different topics are displayed in parentheses.
 
 ``` r
 gdat <- worked_topic %>%
@@ -188,7 +199,7 @@ gdat %>%
 
 ![](README_files/figure-gfm/unnamed-chunk-5-1.png)<!-- -->
 
-### Show summaries
+## Show summaries
 
 Summary of show:
 
@@ -219,16 +230,23 @@ Visual of ratio, log10
 
 ``` r
 gdat %>%
-  count(Show, Host, keyword, ratio) %>% select(-n) %>%
+  #filter(ratio > 1) %>%
+  count(Show, Host, keyword, ratio) %>%
   inner_join(., gdat %>% count(Show, Host) %>% rename(n_keywords = n)) %>%
-  mutate(Show_Host = paste0(Show, ", ", Host, " (", n_keywords, ")")) %>%
-  ggplot(aes(x = log10(ratio + .1), 
+  inner_join(., gdat %>%
+               count(Show, Host, keyword) %>%
+               mutate(n_worked = n > 7) %>%
+               count(Show, Host, n_worked) %>%
+               select(-n_worked) %>%
+               rename(n_worked = n)) %>%
+  mutate(Show_Host = paste0(Show, ", ", Host, " (",n_worked, " / ", n_keywords, ")")) %>%
+  ggplot(aes(x = log10(ratio + .1),
              y = reorder(Show_Host, n_keywords), fill = Show_Host)) +
   geom_density_ridges(scale = .9) + # Adjust the scale to reduce overlap
   theme_bw() +
   theme(legend.position = "none") +
   labs(x = "Ratio [log10]",
-       y = "Show, Host (Count of keywords)")
+       y = "Show, Host (Keywords with valid gtrends / Count of keywords)")
 ```
 
 ![](README_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
@@ -285,13 +303,21 @@ gdat %>%
     ## 10 Last Week Tonight John Oliver      1      12 the United States              0
     ## # ℹ 1,123 more rows
 
+## Limitations
+
+Google trends only go back to 2004/1/1. Google trends had surprisingly
+low throughput of returning results even when querying spanned several
+days to avoid API limits. Some trend response seem unrealistically low,
+for instance all of John Oliver’s last week tonight that worked gave
+ratios of 0 or 1, but never above that.
+
 # Session info
 
 ``` r
 tictoc::toc() ## "Compile report"
 ```
 
-    ## Compile report: 3.38 sec elapsed
+    ## Compile report: 4.91 sec elapsed
 
 ``` r
 sessionInfo()
